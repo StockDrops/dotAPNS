@@ -1,19 +1,20 @@
 ﻿using System;
 using System.Collections.Generic;
-using ExpectedObjects;
-using Newtonsoft.Json;
-using Xunit;
+using System.Text.Json;
+using FluentAssertions;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace dotAPNS.Tests
 {
+    [TestClass]
     public class ApnsErrorResponsePayload_Tests
     {
-        [Theory]
-        [MemberData(nameof(Payloads))]
+        [DataTestMethod]
+        [DynamicData(nameof(Payloads), DynamicDataSourceType.Property)]
         public void Ensure_Parses_Correctly(string json, ApnsErrorResponsePayload expectedPayload)
         {
-            var parsedPayload = JsonConvert.DeserializeObject<ApnsErrorResponsePayload>(json);
-            expectedPayload.ToExpectedObject().ShouldEqual(parsedPayload);
+            var parsedPayload = JsonSerializer.Deserialize<ApnsErrorResponsePayload>(json);
+            expectedPayload.Should().BeEquivalentTo(parsedPayload);
         }
 
         /*
