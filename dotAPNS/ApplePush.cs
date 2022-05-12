@@ -1,17 +1,25 @@
-﻿using System;
+﻿using CommunityToolkit.Diagnostics;
+using dotAPNS.Core.Contracts;
+using dotAPNS.Core.Models;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Dynamic;
 using System.Security.Cryptography.X509Certificates;
-using JetBrains.Annotations;
-using Newtonsoft.Json;
+using System.Text.Json.Serialization;
 
 namespace dotAPNS
 {
     public class ApplePush
     {
-        public string Token { get; private set; }
-        public string VoipToken { get; private set; }
+        
+        public string? Token { get; private set; }
+        public string? VoipToken { get; private set; }
+
+        public bool IsBatched { get; private set; }
+        public ConcurrentBag<IToken> Tokens { get; private set; } = new ConcurrentBag<IToken>();
+
 
         public int Priority =>
             CustomPriority ?? (Type == ApplePushType.Background ? 5 : 10); // 5 for background, 10 for everything else
@@ -23,22 +31,19 @@ namespace dotAPNS
         /// </summary>
         public int? CustomPriority { get; private set; }
 
-        [CanBeNull]
-        public ApplePushAlert Alert { get; private set; }
+        
+        public ApplePushAlert? Alert { get; private set; }
 
-        [CanBeNull]
-        public ApplePushLocalizedAlert LocalizedAlert { get; private set; }
+        public ApplePushLocalizedAlert? LocalizedAlert { get; private set; }
 
         public int? Badge { get; private set; }
 
-        [CanBeNull]
-        public string Sound { get; private set; }
+        public string? Sound { get; private set; }
 
         /// <summary>
         /// See <a href="https://developer.apple.com/documentation/usernotifications/unnotificationcontent/1649866-categoryidentifier">official documentation</a> for reference.
         /// </summary>
-        [CanBeNull]
-        public string Category { get; private set; }
+        public string? Category { get; private set; }
 
         public bool IsContentAvailable { get; private set; }
 
@@ -56,25 +61,24 @@ namespace dotAPNS
         /// When sending the same notification more than once, use the same value in this header to coalesce the requests.
         /// <b>The value of this key must not exceed 64 bytes.</b>
         /// </summary>
-        [CanBeNull]
-        public string CollapseId { get; private set; }
+        public string? CollapseId { get; private set; }
 
         /// <summary>
         /// User-defined properties that will be attached to the root payload dictionary.
         /// </summary>
-        public Dictionary<string, object> CustomProperties { get; set; }
+        public Dictionary<string, object>? CustomProperties { get; set; }
 
         /// <summary>
         /// User-defined properties that will be attached to the <i>aps</i> payload dictionary.
         /// </summary>
-        public IDictionary<string, object> CustomApsProperties { get; set; }
+        public IDictionary<string, object>? CustomApsProperties { get; set; }
 
         /// <summary>
         /// Indicates whether alert must be sent as a string. 
         /// </summary>
         bool _sendAlertAsText;
 
-        internal bool IsSendToDevelopmentServer {get; private set; }
+        public bool IsSandbox {get; private set; }
 
         public ApplePush(ApplePushType pushType)
         {
@@ -114,6 +118,12 @@ namespace dotAPNS
             return push;
         }
 
+        public ApplePush AsBatched()
+        {
+            IsBatched = true;
+            return this;
+        }
+
         /// <summary>
         /// Add `content-available: 1` to the payload.
         /// </summary>
@@ -140,7 +150,7 @@ namespace dotAPNS
         /// <param name="subtitle">Alert subtitle. Can be null.</param>
         /// <param name="body">Alert body. <b>Cannot be null.</b></param>
         /// <returns></returns>
-        public ApplePush AddAlert([CanBeNull] string title, [CanBeNull] string subtitle, [NotNull] string body)
+        public ApplePush AddAlert(string? title, string? subtitle, string body)
         {
             Alert = new ApplePushAlert(title, subtitle, body);
             if (title == null)
@@ -154,7 +164,7 @@ namespace dotAPNS
         /// <param name="title">Alert title. Can be null.</param>
         /// <param name="body">Alert body. <b>Cannot be null.</b></param>
         /// <returns></returns>
-        public ApplePush AddAlert([CanBeNull] string title, [NotNull] string body)
+        public ApplePush AddAlert(string? title, string body)
         {
             Alert = new ApplePushAlert(title, body);
             if (title == null)
@@ -167,7 +177,7 @@ namespace dotAPNS
         /// </summary>
         /// <param name="body">Alert body. <b>Cannot be null.</b></param>
         /// <returns></returns>
-        public ApplePush AddAlert([NotNull] string body)
+        public ApplePush AddAlert(string body)
         {
             return AddAlert(null, body);
         }
@@ -181,8 +191,8 @@ namespace dotAPNS
         /// <param name="tittleLocArgs">Variable string values to appear in place of the format specifiers in title-loc-key. Can be null.</param>
         /// <param name="actionLocKey">The string is used as a key to get a localized string in the current localization to use for the right button’s title instead of “View". Can be null.</param>
         /// <returns></returns>
-        public ApplePush AddLocalizedAlert([CanBeNull] string titleLocKey, [CanBeNull] string[] tittleLocArgs,
-            [NotNull] string locKey, [NotNull] string[] locArgs, [CanBeNull] string actionLocKey)
+        public ApplePush AddLocalizedAlert(string? titleLocKey, string[]? tittleLocArgs,
+            string locKey, string[] locArgs, string? actionLocKey)
         {
             LocalizedAlert = new ApplePushLocalizedAlert(titleLocKey, tittleLocArgs, locKey, locArgs, actionLocKey);
             return this;
@@ -194,7 +204,7 @@ namespace dotAPNS
         /// <param name="locKey">Key to an alert-message string in a Localizable.strings file for the current localization. <b>Cannot be null.</b></param>
         /// <param name="locArgs">Variable string values to appear in place of the format specifiers in loc-key. <b>Cannot be null.</b></param>
         /// <returns></returns>
-        public ApplePush AddLocalizedAlert([NotNull] string locKey, [NotNull] string[] locArgs)
+        public ApplePush AddLocalizedAlert(string locKey, string[] locArgs)
         {
             return AddLocalizedAlert(null, null, locKey, locArgs, null);
         }
@@ -216,7 +226,7 @@ namespace dotAPNS
             return this;
         }
 
-        public ApplePush AddSound([NotNull] string sound = "default")
+        public ApplePush AddSound(string sound = "default")
         {
             if (string.IsNullOrWhiteSpace(sound))
                 throw new ArgumentException("Value cannot be null or whitespace.", nameof(sound));
@@ -227,7 +237,7 @@ namespace dotAPNS
             return this;
         }
 
-        public ApplePush AddCategory([NotNull] string category)
+        public ApplePush AddCategory(string category)
         {
             if (string.IsNullOrWhiteSpace(category))
                 throw new ArgumentException("Value cannot be null or whitespace.", nameof(category));
@@ -258,27 +268,82 @@ namespace dotAPNS
             return this;
         }
 
-        public ApplePush AddToken([NotNull] string token)
+        public ApplePush AddToken(string token)
         {
             if (string.IsNullOrWhiteSpace(token))
                 throw new ArgumentException("Value cannot be null or whitespace.", nameof(token));
-            EnsureTokensNotExistGuard();
+            EnsureTokensNotExistGuardUnlessBatched();
             if (Type == ApplePushType.Voip)
                 throw new InvalidOperationException(
                     $"Please use AddVoipToken() when sending {nameof(ApplePushType.Voip)} pushes.");
-            Token = token;
+            if(IsBatched)
+                Tokens.Add(new Token(token, Type, IsSandbox));
+            else
+                Token = token;
             return this;
         }
 
-        public ApplePush AddVoipToken([NotNull] string voipToken)
+        public ApplePush AddToken(IToken token)
+        {
+            if (string.IsNullOrWhiteSpace(token.Value))
+                throw new ArgumentException("Value cannot be null or whitespace.", nameof(token.Value));
+            EnsureTokensNotExistGuardUnlessBatched();
+            if(Type != token.Type)
+                throw new InvalidOperationException(
+                    $"The token type must match the alert type when sending {nameof(ApplePushType.Voip)} pushes.");
+            if (IsBatched)
+                Tokens.Add(token);
+            else
+            {
+                if(token.Type == ApplePushType.Voip)
+                {
+                    VoipToken = token.Value;
+                }
+                else
+                {
+                    Token = token.Value;
+                }
+                if (token.IsSandbox)
+                    SendToDevelopmentServer();
+            }
+            return this;
+        }
+
+        public ApplePush AddVoipToken(string voipToken)
         {
             if (string.IsNullOrWhiteSpace(voipToken))
                 throw new ArgumentException("Value cannot be null or whitespace.", nameof(voipToken));
-            EnsureTokensNotExistGuard();
+            EnsureTokensNotExistGuardUnlessBatched();
             if (Type != ApplePushType.Voip)
                 throw new InvalidOperationException(
                     $"VoIP token may only be used with {nameof(ApplePushType.Voip)} pushes.");
-            VoipToken = voipToken;
+            if(IsBatched)
+                Tokens.Add(new Token(voipToken, Type, IsSandbox));
+            else
+                VoipToken = voipToken;
+            return this;
+        }
+        public ApplePush AddTokens(ICollection<string> tokens)
+        {
+            EnsureIsBatchedGuard();
+            Guard.IsNotNull(tokens, nameof(tokens));
+            Guard.IsNotEmpty(tokens, nameof(tokens));
+            foreach(var token in tokens)
+            {
+                Tokens.Add(new Token(token, Type, IsSandbox));
+            }
+            return this;
+        }
+        public ApplePush AddTokens(ICollection<IToken> tokens)
+        {
+            EnsureIsBatchedGuard();
+            Guard.IsNotNull(tokens, nameof(tokens));
+            Guard.IsNotEmpty(tokens, nameof(tokens));
+            foreach(var token in tokens)
+            {
+                Guard.IsNotNullOrEmpty(token.Value, nameof(token.Value));
+                Tokens.Add(token);
+            }
             return this;
         }
 
@@ -305,7 +370,7 @@ namespace dotAPNS
             return this;
         }
 
-        public ApplePush AddCollapseId([NotNull] string collapseId)
+        public ApplePush AddCollapseId(string collapseId)
         {
             if (string.IsNullOrEmpty(collapseId))
                 throw new ArgumentException($"'{nameof(collapseId)}' cannot be null or empty", nameof(collapseId));
@@ -318,18 +383,24 @@ namespace dotAPNS
         /// <summary>
         /// Indicates that the push must be sent to a development server instead of production one.
         /// See <a href="https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server/sending_notification_requests_to_apns">Establish a Connection to APNs</a> for more info.
+        /// Call this before adding any new tokens.
         /// </summary>
         /// <returns></returns>
         public ApplePush SendToDevelopmentServer()
         {
-            IsSendToDevelopmentServer = true;
+            IsSandbox = true;
             return this;
         }
 
-        void EnsureTokensNotExistGuard()
+        void EnsureTokensNotExistGuardUnlessBatched()
         {
-            if (!(string.IsNullOrEmpty(Token) && string.IsNullOrEmpty(VoipToken)))
-                throw new InvalidOperationException("Notification already has token");
+            if (!IsBatched && !(string.IsNullOrEmpty(Token) && string.IsNullOrEmpty(VoipToken)))
+                throw new InvalidOperationException("Notification already has token. If you want to send a batch, make sure to call AsBatched() before.");
+        }
+        void EnsureIsBatchedGuard()
+        {
+            if (!IsBatched)
+                throw new InvalidOperationException("Make sure you call AsBatched before adding multiple tokens.");
         }
 
         void IsContentAvailableGuard()
@@ -388,64 +459,6 @@ namespace dotAPNS
             }
 
             return payload;
-        }
-    }
-
-    public class ApplePushAlert
-    {
-        public string Title { get; }
-
-        public string Subtitle { get; }
-
-        public string Body { get; }
-
-        public ApplePushAlert([CanBeNull] string title, [NotNull] string body)
-        {
-            Title = title;
-            Body = body ?? throw new ArgumentNullException(nameof(body));
-        }
-
-        public ApplePushAlert([CanBeNull] string title, [CanBeNull] string subtitle, [NotNull] string body)
-        {
-            Title = title;
-            Subtitle = subtitle;
-            Body = body ?? throw new ArgumentNullException(nameof(body));
-        }
-    }
-
-    [JsonObject(MemberSerialization.OptIn)]
-    public class ApplePushLocalizedAlert
-    {
-        [JsonProperty("title-loc-key")]
-        public string TitleLocKey { get; }
-
-        [JsonProperty("title-loc-args")]
-        public string[] TitleLocArgs { get; }
-
-        [JsonProperty("loc-key")]
-        public string LocKey { get; }
-
-        [JsonProperty("loc-args")]
-        public string[] LocArgs { get; }
-
-        [JsonProperty("action-loc-key")]
-        public string ActionLocKey { get; }
-
-        public ApplePushLocalizedAlert([NotNull] string locKey, [NotNull] string[] locArgs)
-        {
-            LocKey = locKey ?? throw new ArgumentNullException(nameof(locKey));
-            LocArgs = locArgs ?? throw new ArgumentNullException(nameof(locArgs));
-        }
-
-        public ApplePushLocalizedAlert(string titleLocKey, string[] titleLocArgs, string locKey, string[] locArgs,
-            string actionLocKey)
-        {
-            TitleLocKey = titleLocKey;
-            TitleLocArgs = titleLocArgs;
-            LocKey = locKey ?? throw new ArgumentNullException(nameof(locKey));
-            ;
-            LocArgs = locArgs ?? throw new ArgumentNullException(nameof(locArgs));
-            ActionLocKey = actionLocKey;
         }
     }
 }
